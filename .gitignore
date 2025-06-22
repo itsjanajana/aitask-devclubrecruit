@@ -192,3 +192,15 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+
+# Streamlit specific
+.streamlit/
+
+# Ignore generated summaries
+*.pdf
+*.txt
+
+# macOS cruft 
+.DS_Store
