@@ -133,5 +133,5 @@ if video_input:
             )
 
 st.markdown("---")
-st.caption("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru"")
+st.caption("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru")
 
