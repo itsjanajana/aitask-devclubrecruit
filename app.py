@@ -7,10 +7,10 @@ import re
 # ------------------------------------
 # CONFIG
 # ------------------------------------
-st.set_page_config(page_title="📺 YouTube Summarizer", layout="wide")
+st.set_page_config(page_title=" YouTube Summarizer", layout="wide")
 
-st.title("🎥 YouTube Video Summarizer")
-st.write("Fetch, clean, summarize with double pass, highlight key words, and download!")
+st.title(" YouTube Video Summarizer")
+st.write("Fetch, clean, double-summarize, highlight keywords, and download!")
 
 # ------------------------------------
 # FUNCTIONS
@@ -26,10 +26,10 @@ def fetch_transcript(video_id):
         return f"❌ Error: {e}"
 
 def clean_transcript(text):
-    """Clean without losing info."""
-    text = re.sub(r'\[.*?\]', '', text)  # remove brackets
-    text = re.sub(r'\s+', ' ', text)     # normalize spaces
-    text = re.sub(r'([.!?])([A-Za-z])', r'\1 \2', text)  # fix missing space after punctuation
+    """Clean carefully, keep content."""
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'([.!?])([A-Za-z])', r'\1 \2', text)
     return text.strip()
 
 @st.cache_resource(show_spinner=True)
@@ -37,7 +37,6 @@ def load_summarizer():
     return pipeline("summarization", model="facebook/bart-large-cnn")
 
 def chunk_text(text, max_length=800):
-    """Chunk text for summarizer."""
     sentences = text.split('. ')
     chunks = []
     current = ""
@@ -52,7 +51,6 @@ def chunk_text(text, max_length=800):
     return chunks
 
 def double_summarize(text):
-    """Two-pass summary."""
     summarizer = load_summarizer()
     chunks = chunk_text(text)
     first_pass = [summarizer(c, max_length=120, min_length=30, do_sample=False)[0]['summary_text'] for c in chunks]
@@ -61,7 +59,6 @@ def double_summarize(text):
     return final_summary
 
 def highlight(summary, words):
-    """Highlight words."""
     for w in words:
         summary = re.sub(f'(?i)({w})', r'**\1**', summary)
     return summary
@@ -74,22 +71,30 @@ def to_pdf(text):
     return pdf.output(dest='S').encode('latin-1')
 
 # ------------------------------------
-# SIDEBAR INPUT
+# MAIN INPUT
 # ------------------------------------
 
-video_input = st.sidebar.text_input("🎥 Enter YouTube Video URL or ID:")
+st.subheader("📥 Enter YouTube Video URL or ID")
+
+video_input = st.text_input(
+    "Paste a YouTube link or video ID below:",
+    placeholder="e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    help="The app will extract the video ID for you."
+)
 
 if video_input:
     if "youtu" in video_input:
         ids = re.findall(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_input)
         if not ids:
-            st.error("❌ Could not extract video ID.")
+            st.error("❌ Could not extract video ID. Check the URL.")
             st.stop()
         video_id = ids[0]
     else:
         video_id = video_input.strip()
 
-    with st.spinner("Fetching transcript..."):
+    st.info(f"🔑 Video ID: `{video_id}`")
+
+    with st.spinner("⏳ Fetching transcript..."):
         raw = fetch_transcript(video_id)
 
     if raw.startswith("❌"):
@@ -105,7 +110,7 @@ if video_input:
 
         with col2:
             st.subheader("✨ Double-Pass Summary")
-            with st.spinner("Generating..."):
+            with st.spinner("⏳ Summarizing..."):
                 summary = double_summarize(cleaned)
                 words = re.findall(r'\w+', summary.lower())
                 freq = sorted(set(words), key=words.count, reverse=True)[:5]
@@ -113,7 +118,7 @@ if video_input:
                 st.markdown(highlighted)
 
             st.download_button(
-                "⬇️ Download TXT",
+                "⬇️ Download Summary as TXT",
                 data=summary,
                 file_name=f"{video_id}_summary.txt",
                 mime="text/plain"
@@ -121,9 +126,12 @@ if video_input:
 
             pdf_data = to_pdf(summary)
             st.download_button(
-                "⬇️ Download PDF",
+                "⬇️ Download Summary as PDF",
                 data=pdf_data,
                 file_name=f"{video_id}_summary.pdf",
                 mime="application/pdf"
             )
-st.info("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru")
+
+st.markdown("---")
+st.caption("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru"")
+
