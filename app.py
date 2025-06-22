@@ -4,142 +4,126 @@ from transformers import pipeline
 from fpdf import FPDF
 import re
 
-# -----------------------------
+# ------------------------------------
 # CONFIG
-# -----------------------------
-st.set_page_config(
-    page_title="YouTube Video Summarizer",
-    layout="wide",
-)
+# ------------------------------------
+st.set_page_config(page_title="📺 YouTube Summarizer", layout="wide")
 
-# -----------------------------
-# TITLE
-# -----------------------------
-st.title("🎬 YouTube Video Summarizer")
-st.write("Fetch transcript, clean it thoroughly, summarize with double-pass, highlight keywords, and download it!")
+st.title("🎥 YouTube Video Summarizer")
+st.write("Fetch, clean, summarize with double pass, highlight key words, and download!")
 
-# -----------------------------
+# ------------------------------------
 # FUNCTIONS
-# -----------------------------
+# ------------------------------------
 
 @st.cache_data(show_spinner=True)
-def get_transcript(video_id):
-    """Fetch and join transcript text safely."""
+def fetch_transcript(video_id):
+    """Fetch transcript from YouTube."""
     try:
-        raw_transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join([entry['text'] for entry in raw_transcript])
-        return text
+        data = YouTubeTranscriptApi.get_transcript(video_id)
+        return " ".join([item['text'] for item in data])
     except Exception as e:
-        return f"❌ Error fetching transcript: {str(e)}"
+        return f"❌ Error: {e}"
 
-def clean_text(text):
-    """Advanced cleaning with minimal content loss."""
-    text = re.sub(r'\s+', ' ', text)  # normalize whitespace
+def clean_transcript(text):
+    """Clean without losing info."""
+    text = re.sub(r'\[.*?\]', '', text)  # remove brackets
+    text = re.sub(r'\s+', ' ', text)     # normalize spaces
     text = re.sub(r'([.!?])([A-Za-z])', r'\1 \2', text)  # fix missing space after punctuation
-    text = re.sub(r'\[.*?\]', '', text)  # remove timestamps or bracket notes
-    text = text.strip()
-    return text
+    return text.strip()
 
 @st.cache_resource(show_spinner=True)
-def get_summarizer():
-    """Load summarizer model once."""
+def load_summarizer():
     return pipeline("summarization", model="facebook/bart-large-cnn")
 
-def summarize_text(text, chunk=500):
-    """Double-pass summarization for high accuracy, chunked to avoid token limits."""
-    summarizer = get_summarizer()
-    summaries = []
-    for i in range(0, len(text), chunk):
-        part = text[i:i+chunk]
-        summary = summarizer(part, max_length=120, min_length=30, do_sample=False)[0]['summary_text']
-        summaries.append(summary)
-    # Second pass: summarize all summaries
-    combined = " ".join(summaries)
+def chunk_text(text, max_length=800):
+    """Chunk text for summarizer."""
+    sentences = text.split('. ')
+    chunks = []
+    current = ""
+    for s in sentences:
+        if len(current) + len(s) < max_length:
+            current += s + ". "
+        else:
+            chunks.append(current.strip())
+            current = s + ". "
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+def double_summarize(text):
+    """Two-pass summary."""
+    summarizer = load_summarizer()
+    chunks = chunk_text(text)
+    first_pass = [summarizer(c, max_length=120, min_length=30, do_sample=False)[0]['summary_text'] for c in chunks]
+    combined = " ".join(first_pass)
     final_summary = summarizer(combined, max_length=150, min_length=40, do_sample=False)[0]['summary_text']
     return final_summary
 
-def highlight_keywords(text, keywords):
-    """Add keyword highlights."""
-    for kw in keywords:
-        text = re.sub(f"(?i)({kw})", r"**\1**", text)
-    return text
+def highlight(summary, words):
+    """Highlight words."""
+    for w in words:
+        summary = re.sub(f'(?i)({w})', r'**\1**', summary)
+    return summary
 
-def make_pdf(summary_text):
-    """Generate PDF with FPDF."""
+def to_pdf(text):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, summary_text)
-    return pdf
+    pdf.multi_cell(0, 10, text)
+    return pdf.output(dest='S').encode('latin-1')
 
-# -----------------------------
-# SIDEBAR
-# -----------------------------
-st.sidebar.header("🔗 Enter Video")
-video_input = st.sidebar.text_input("YouTube URL or Video ID:", "")
+# ------------------------------------
+# SIDEBAR INPUT
+# ------------------------------------
 
-# -----------------------------
-# MAIN LOGIC
-# -----------------------------
+video_input = st.sidebar.text_input("🎥 Enter YouTube Video URL or ID:")
+
 if video_input:
-    # Extract ID if needed
-    if "youtube.com" in video_input or "youtu.be" in video_input:
-        try:
-            video_id = re.findall(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_input)[0]
-        except:
-            st.error("Invalid YouTube link.")
+    if "youtu" in video_input:
+        ids = re.findall(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_input)
+        if not ids:
+            st.error("❌ Could not extract video ID.")
             st.stop()
+        video_id = ids[0]
     else:
         video_id = video_input.strip()
 
     with st.spinner("Fetching transcript..."):
-        transcript = get_transcript(video_id)
+        raw = fetch_transcript(video_id)
 
-    if transcript.startswith("❌"):
-        st.error(transcript)
+    if raw.startswith("❌"):
+        st.error(raw)
     else:
-        clean_transcript = clean_text(transcript)
-        
+        cleaned = clean_transcript(raw)
+
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("📝 Original Transcript")
-            st.write(clean_transcript)
+            st.subheader("📜 Full Transcript")
+            st.write(cleaned)
 
         with col2:
-            st.subheader("✨ Generated Summary")
-            with st.spinner("Summarizing... (double pass)"):
-                summary = summarize_text(clean_transcript)
-
-            # Highlight keywords (optional example: top 5 frequent words)
-            words = re.findall(r'\w+', summary.lower())
-            common = sorted(set(words), key=words.count, reverse=True)[:5]
-            highlighted = highlight_keywords(summary, common)
-            st.markdown(highlighted)
-
-            st.success("✅ Summary Ready!")
-
-            # Download buttons
-            txt_filename = f"{video_id}_summary.txt"
-            pdf_filename = f"{video_id}_summary.pdf"
+            st.subheader("✨ Double-Pass Summary")
+            with st.spinner("Generating..."):
+                summary = double_summarize(cleaned)
+                words = re.findall(r'\w+', summary.lower())
+                freq = sorted(set(words), key=words.count, reverse=True)[:5]
+                highlighted = highlight(summary, freq)
+                st.markdown(highlighted)
 
             st.download_button(
-                label="⬇️ Download as TXT",
+                "⬇️ Download TXT",
                 data=summary,
-                file_name=txt_filename,
+                file_name=f"{video_id}_summary.txt",
                 mime="text/plain"
             )
 
-            pdf = make_pdf(summary)
-            pdf_output = bytes(pdf.output(dest='S').encode('latin1'))
+            pdf_data = to_pdf(summary)
             st.download_button(
-                label="⬇️ Download as PDF",
-                data=pdf_output,
-                file_name=pdf_filename,
+                "⬇️ Download PDF",
+                data=pdf_data,
+                file_name=f"{video_id}_summary.pdf",
                 mime="application/pdf"
             )
-
-# -----------------------------
-# FOOTER
-# -----------------------------
 st.info("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru")
