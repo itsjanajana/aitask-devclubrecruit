@@ -3,173 +3,143 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from transformers import pipeline
 from fpdf import FPDF
 import re
-import nltk
-from nltk.tokenize import sent_tokenize
-from difflib import SequenceMatcher
-from collections import Counter
-import string
 
-nltk.download('punkt')
+# -----------------------------
+# CONFIG
+# -----------------------------
+st.set_page_config(
+    page_title="YouTube Video Summarizer",
+    layout="wide",
+)
 
-def thorough_clean(text):
-    text = re.sub(r'\[\d{1,2}:\d{2}(:\d{2})?\]', '', text)
-    text = re.sub(r'\bSpeaker \d+:\s*', '', text)
-    text = re.sub(r'\[(music|applause|laughter|noise|cough)\]', '', text, flags=re.I)
-    text = re.sub(r'-\s*\n\s*', '', text)
-    filler_pattern = r'\b(um|uh|like|you know|you see|so|actually|basically|right|okay|well)\b'
-    text = re.sub(filler_pattern, '', text, flags=re.I)
-    text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)
-    text = re.sub(r'\n+', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+# -----------------------------
+# TITLE
+# -----------------------------
+st.title("🎬 YouTube Video Summarizer")
+st.write("Fetch transcript, clean it thoroughly, summarize with double-pass, highlight keywords, and download it!")
+
+# -----------------------------
+# FUNCTIONS
+# -----------------------------
+
+@st.cache_data(show_spinner=True)
+def get_transcript(video_id):
+    """Fetch and join transcript text safely."""
+    try:
+        raw_transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        text = " ".join([entry['text'] for entry in raw_transcript])
+        return text
+    except Exception as e:
+        return f"❌ Error fetching transcript: {str(e)}"
+
+def clean_text(text):
+    """Advanced cleaning with minimal content loss."""
+    text = re.sub(r'\s+', ' ', text)  # normalize whitespace
+    text = re.sub(r'([.!?])([A-Za-z])', r'\1 \2', text)  # fix missing space after punctuation
+    text = re.sub(r'\[.*?\]', '', text)  # remove timestamps or bracket notes
+    text = text.strip()
     return text
 
-def chunk_text(text, max_tokens=600, overlap_tokens=200):
-    sentences = sent_tokenize(text)
-    chunks = []
-    current_chunk = []
-    current_len = 0
-    for sentence in sentences:
-        sent_len = len(sentence.split())
-        if current_len + sent_len > max_tokens:
-            chunks.append(" ".join(current_chunk))
-            overlap_count = 0
-            overlap_sentences = []
-            for s in reversed(current_chunk):
-                overlap_count += len(s.split())
-                overlap_sentences.insert(0, s)
-                if overlap_count >= overlap_tokens:
-                    break
-            current_chunk = overlap_sentences
-            current_len = sum(len(s.split()) for s in current_chunk)
-        current_chunk.append(sentence)
-        current_len += sent_len
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-    return chunks
+@st.cache_resource(show_spinner=True)
+def get_summarizer():
+    """Load summarizer model once."""
+    return pipeline("summarization", model="facebook/bart-large-cnn")
 
-def generate_summary(model, text, max_len, min_len):
-    return model(text, max_length=max_len, min_length=min_len, do_sample=False)[0]['summary_text']
+def summarize_text(text, chunk=500):
+    """Double-pass summarization for high accuracy, chunked to avoid token limits."""
+    summarizer = get_summarizer()
+    summaries = []
+    for i in range(0, len(text), chunk):
+        part = text[i:i+chunk]
+        summary = summarizer(part, max_length=120, min_length=30, do_sample=False)[0]['summary_text']
+        summaries.append(summary)
+    # Second pass: summarize all summaries
+    combined = " ".join(summaries)
+    final_summary = summarizer(combined, max_length=150, min_length=40, do_sample=False)[0]['summary_text']
+    return final_summary
 
-def similarity(a, b):
-    return SequenceMatcher(None, a, b).ratio()
+def highlight_keywords(text, keywords):
+    """Add keyword highlights."""
+    for kw in keywords:
+        text = re.sub(f"(?i)({kw})", r"**\1**", text)
+    return text
 
-def create_pdf(summary, video_id):
+def make_pdf(summary_text):
+    """Generate PDF with FPDF."""
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "YouTube Video Summary", ln=True, align='C')
-    pdf.ln(10)
     pdf.set_font("Arial", size=12)
-    for line in summary.split('. '):
-        pdf.multi_cell(0, 10, line.strip() + '.')
-    filename = f"summary_{video_id}.pdf"
-    pdf.output(filename)
-    return filename
+    pdf.multi_cell(0, 10, summary_text)
+    return pdf
 
-def extract_keywords(text, num_keywords=10):
-    text_clean = text.lower().translate(str.maketrans('', '', string.punctuation))
-    words = text_clean.split()
-    stopwords = set([
-        "the", "and", "to", "of", "a", "in", "is", "that", "it", "on", "for", "with",
-        "as", "this", "are", "was", "but", "be", "at", "by", "or", "an", "if", "from",
-        "so", "we", "can", "will", "not", "they", "all", "has", "have"
-    ])
-    filtered = [w for w in words if w not in stopwords and len(w) > 2]
-    counter = Counter(filtered)
-    keywords = [word for word, count in counter.most_common(num_keywords)]
-    return keywords
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+st.sidebar.header("🔗 Enter Video")
+video_input = st.sidebar.text_input("YouTube URL or Video ID:", "")
 
-def highlight_keywords(summary, keywords):
-    for kw in keywords:
-        summary = re.sub(r'\b(' + re.escape(kw) + r')\b', f"**{kw.upper()}**", summary, flags=re.I)
-    return summary
-
-@st.cache_resource(show_spinner=False)
-def load_model(name):
-    return pipeline("summarization", model=name)
-
-def main():
-    st.title("🎥 YouTube Video Summarizer — Rigorous & Accurate")
-
-    video_url = st.text_input("Paste YouTube video URL")
-    model_name = st.selectbox("Choose summarization model", ["facebook/bart-large-cnn", "google/pegasus-xsum"])
-
-    summary_len = st.radio("Summary length", ["Detailed", "Medium", "Short"])
-
-    length_map = {
-        "Detailed": (300, 150),
-        "Medium": (130, 50),
-        "Short": (60, 20)
-    }
-
-    if video_url:
+# -----------------------------
+# MAIN LOGIC
+# -----------------------------
+if video_input:
+    # Extract ID if needed
+    if "youtube.com" in video_input or "youtu.be" in video_input:
         try:
-            video_id = video_url.split("v=")[-1].split("&")[0]
-            st.info(f"Fetching transcript for video ID: {video_id}...")
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = transcript_list.find_transcript(['en'])
-            raw_text = " ".join([x['text'] for x in transcript.fetch()])
+            video_id = re.findall(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_input)[0]
+        except:
+            st.error("Invalid YouTube link.")
+            st.stop()
+    else:
+        video_id = video_input.strip()
 
-            st.expander("Show Raw Transcript").write(raw_text)
+    with st.spinner("Fetching transcript..."):
+        transcript = get_transcript(video_id)
 
-            cleaned_text = thorough_clean(raw_text)
-            st.expander("Show Cleaned Transcript").write(cleaned_text)
+    if transcript.startswith("❌"):
+        st.error(transcript)
+    else:
+        clean_transcript = clean_text(transcript)
+        
+        col1, col2 = st.columns(2)
 
-            if st.button("Generate Summary"):
-                with st.spinner("Generating summary..."):
-                    model = load_model(model_name)
-                    max_len, min_len = length_map[summary_len]
+        with col1:
+            st.subheader("📝 Original Transcript")
+            st.write(clean_transcript)
 
-                    chunks = chunk_text(cleaned_text, max_tokens=600, overlap_tokens=200)
-                    chunk_summaries = []
-                    progress = st.progress(0)
-                    for i, chunk in enumerate(chunks):
-                        chunk_sum = generate_summary(model, chunk, max_len, min_len)
-                        chunk_summaries.append(chunk_sum)
-                        progress.progress((i+1)/len(chunks))
+        with col2:
+            st.subheader("✨ Generated Summary")
+            with st.spinner("Summarizing... (double pass)"):
+                summary = summarize_text(clean_transcript)
 
-                    combined_summary = " ".join(chunk_summaries)
+            # Highlight keywords (optional example: top 5 frequent words)
+            words = re.findall(r'\w+', summary.lower())
+            common = sorted(set(words), key=words.count, reverse=True)[:5]
+            highlighted = highlight_keywords(summary, common)
+            st.markdown(highlighted)
 
-                    summary_1 = generate_summary(model, combined_summary, max_len*2, min_len*2)
-                    summary_2 = generate_summary(model, combined_summary, max_len, max(20, min_len//2))
+            st.success("✅ Summary Ready!")
 
-                    sim_score = similarity(summary_1, summary_2)
-                    st.write(f"Similarity between summaries: {sim_score:.2f}")
+            # Download buttons
+            txt_filename = f"{video_id}_summary.txt"
+            pdf_filename = f"{video_id}_summary.pdf"
 
-                    if sim_score < 0.85:
-                        final_summary = summary_1 if len(summary_1) > len(summary_2) else summary_2
-                        st.warning("Low similarity between summary passes; returning longer summary to preserve content.")
-                    else:
-                        final_summary = summary_2
-                        st.success("Summaries consistent, returning concise summary.")
+            st.download_button(
+                label="⬇️ Download as TXT",
+                data=summary,
+                file_name=txt_filename,
+                mime="text/plain"
+            )
 
-                    keywords = extract_keywords(final_summary)
-                    highlighted_summary = highlight_keywords(final_summary, keywords)
+            pdf = make_pdf(summary)
+            pdf_output = bytes(pdf.output(dest='S').encode('latin1'))
+            st.download_button(
+                label="⬇️ Download as PDF",
+                data=pdf_output,
+                file_name=pdf_filename,
+                mime="application/pdf"
+            )
 
-                    st.markdown("### Final Summary with Keywords Highlighted")
-                    st.markdown(highlighted_summary)
-
-                    st.markdown("### Side-by-Side Transcript and Summary")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.header("Cleaned Transcript")
-                        st.write(cleaned_text)
-                    with col2:
-                        st.header("Summary")
-                        st.write(final_summary)
-
-                    pdf_file = create_pdf(final_summary, video_id)
-                    with open(pdf_file, "rb") as f:
-                        st.download_button("Download PDF 📄", f, file_name=pdf_file, mime="application/pdf")
-
-                    txt_file = f"summary_{video_id}.txt"
-                    with open(txt_file, "w") as f:
-                        f.write(final_summary)
-                    with open(txt_file, "rb") as f:
-                        st.download_button("Download TXT 📝", f, file_name=txt_file, mime="text/plain")
-
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-if __name__ == "__main__":
-    main()
+# -----------------------------
+# FOOTER
+# -----------------------------
+st.info("Built with ❤️ using Streamlit, youtube-transcript-api, and transformers. Built in hopes of getting recruited. Built by CS24B2014 Anjana Chandru")
